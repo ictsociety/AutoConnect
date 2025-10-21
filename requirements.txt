@@ -1,0 +1,57 @@
+# UNESWA WiFi AutoConnect - Python Dependencies
+# ICT Society Initiative - University of Eswatini
+#
+# Install with: pip install -r requirements.txt
+
+# GUI framework (dark-mode UI)
+customtkinter>=5.2.0
+
+# HTTP Requests for connectivity testing
+requests>=2.31.0
+
+# HTML parsing for device registration forms
+beautifulsoup4>=4.12.0
+
+# Cross-platform system operations
+psutil>=5.9.0
+
+# Windows-specific dependencies (automatically installed on Windows)
+pywin32>=306; sys_platform == "win32"
+
+# Configuration file handling
+configparser>=5.3.0
+
+# Logging utilities
+colorlog>=6.7.0
+
+# argparse is built-in in Python 3.x; kept for clarity but not required
+# argparse
+
+# JSON handling (built-in, listed for completeness)
+# json
+
+# Threading utilities (built-in)
+# threading
+
+# System path operations (built-in)
+# pathlib
+
+# Operating system interface (built-in)
+# os
+
+# Platform identification (built-in)
+# platform
+
+# Subprocess management (built-in)
+# subprocess
+
+# Time utilities (built-in)
+# time
+
+# Socket operations for connectivity testing (built-in)
+# socket
+
+# Development dependencies (optional)
+# pytest>=7.4.0
+# black>=23.0.0
+# flake8>=6.0.0
