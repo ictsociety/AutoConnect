@@ -50,16 +50,20 @@ class WindowsProxyManager:
         """Enable manual proxy in Windows registry"""
         try:
             # Open the Internet Settings key in the registry
+            # This is where IE/Edge/Chrome store proxy settings on Windows.
+            # We're modifying HKEY_CURRENT_USER, so changes only affect the current user.
             reg_path = WINDOWS_SETTINGS["registry_path"]
             key = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER, reg_path, 0, winreg.KEY_ALL_ACCESS
             )
 
             # Set proxy server
+            # Format is "host:port" - this is what browsers will use for HTTP/HTTPS
             proxy_server = f"{PROXY_HOST}:{PROXY_PORT}"
             winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, proxy_server)
 
             # Turn on the proxy (1 = enabled, 0 = disabled)
+            # This is the master switch - without this, ProxyServer is ignored
             winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
 
             # Clear any auto-config URL so we use the manual proxy instead
@@ -73,12 +77,15 @@ class WindowsProxyManager:
             winreg.CloseKey(key)
 
             # Tell Windows to reload the proxy settings
+            # Without this, apps won't see the new settings until you log out/in
             import ctypes
 
             ctypes.windll.wininet.InternetSetOptionW(0, 37, 0, 0)  # Refresh settings
             ctypes.windll.wininet.InternetSetOptionW(0, 39, 0, 0)  # Notify of changes
 
             extra = ""
+            # WinHTTP is used by system services/CLI tools; setting it typically requires Administrator.
+            # Best-effort here: if access is denied, we append a hint so the user can re-run elevated.
             if WINDOWS_SETTINGS.get("configure_winhttp", False):
                 ok, _, err = run_cmd(["netsh", "winhttp", "set", "proxy", proxy_server], timeout=10)
                 if ok:
@@ -117,6 +124,7 @@ class WindowsProxyManager:
             ctypes.windll.wininet.InternetSetOptionW(0, 39, 0, 0)
 
             # Also configure WinHTTP if enabled (used by system services and some CLI tools)
+            # Note: Requires elevation; on failure we surface a hint rather than crashing.
             extra = ""
             if WINDOWS_SETTINGS.get("configure_winhttp", False):
                 ok, _, err = run_cmd(["netsh", "winhttp", "set", "proxy", f"{PROXY_HOST}:{PROXY_PORT}"], timeout=10)
@@ -164,6 +172,7 @@ class WindowsProxyManager:
             ctypes.windll.wininet.InternetSetOptionW(0, 39, 0, 0)
 
             extra = ""
+            # Resetting WinHTTP affects system services and typically needs Administrator rights.
             if WINDOWS_SETTINGS.get("configure_winhttp", False):
                 ok, _, err = run_cmd(["netsh", "winhttp", "reset", "proxy"], timeout=10)
                 extra = " + WinHTTP reset" if ok else f" + WinHTTP reset failed: {err}"
@@ -249,6 +258,7 @@ class LinuxProxyManager:
                     content = f.read()
 
                 # Make a backup before we change anything
+                # If something goes wrong, users can restore from .uneswa_backup
                 if backup:
                     backup_path = file_path.with_suffix(
                         file_path.suffix + ".uneswa_backup"
@@ -256,7 +266,8 @@ class LinuxProxyManager:
                     shutil.copy2(file_path, backup_path)
 
             # If we've already added proxy settings before, remove them first
-            # so we don't end up with duplicates
+            # so we don't end up with duplicates every time the user runs this.
+            # We look for our marker comment to find the old block.
             if "# UNESWA WiFi AutoConnect proxy settings" in content:
                 # Strip out the old block
                 lines = content.split("\n")
@@ -280,9 +291,11 @@ class LinuxProxyManager:
                 content = "\n".join(new_lines)
 
             # Add new proxy settings
+            # We wrap them in marker comments so we can find and remove them later
             proxy_block = "\n\n# UNESWA WiFi AutoConnect proxy settings\n"
             proxy_block += "# Proxy settings block managed by UNESWA WiFi AutoConnect\n"
 
+            # Export both lowercase and uppercase versions - some tools check one, some the other
             for export_line in LINUX_SETTINGS["proxy_exports"]:
                 proxy_block += f"{export_line}\n"
 
@@ -336,6 +349,7 @@ class LinuxProxyManager:
     def _configure_fedora_dnf() -> Tuple[bool, str]:
         """Configure DNF proxy for Fedora-based distros"""
         try:
+            # Fedora DNF ignores environment proxies; needs explicit proxy= in /etc/dnf/dnf.conf
             dnf_config = Path(
                 LINUX_SETTINGS["distro_configs"]["fedora"]["dnf_config_file"]
             )

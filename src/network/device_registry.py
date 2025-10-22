@@ -53,6 +53,12 @@ class RegistrationFormParser:
         """
         Parse HTML registration form to extract submission details
         Returns dict with action URL, method, and required fields
+        
+        This is like reverse-engineering a web form - we look at the HTML and figure out
+        where to POST the data and what field names to use.
+        
+        BeautifulSoup is a library that parses HTML (web page code) and lets us search
+        through it like a tree structure. We use it to find forms, input fields, etc.
         """
         try:
             soup = BeautifulSoup(html_content, "html.parser")
@@ -65,6 +71,8 @@ class RegistrationFormParser:
                 form_method = form.get("method", "post").lower()
 
                 # Look for common registration form indicators
+                # We check if the form text contains words like "registration", "username", etc.
+                # If we find 2+ of these keywords, it's probably the right form.
                 form_text = form.get_text().lower()
                 registration_indicators = [
                     "registration",
@@ -136,6 +144,9 @@ class RegistrationFormParser:
         """
         Guess which form fields correspond to username/password
         Returns mapping of standard names to form field names
+        
+        Different registration portals use different field names ("user" vs "username"
+        vs "student_id"). We use keyword matching to figure out which is which.
         """
         mapping = {}
 
@@ -144,6 +155,7 @@ class RegistrationFormParser:
             field_type = field_info.get("type", "").lower()
 
             # Username field detection
+            # If a field name contains any of these words, it's probably the username field
             username_indicators = [
                 "username",
                 "user",
@@ -284,6 +296,7 @@ class CampusRegistrar:
 
             # Known common mapping for the NetReg portal used on https://netreg.uniswa.sz
             # The portal posts 'user' and 'pass' with a 'submit' button named 'submit'.
+            # If our heuristics didn't find these, add them explicitly (we know the portal).
             if not field_mapping.get("username") and "user" in form_details.get("fields", {}):
                 field_mapping["username"] = "user"
             if not field_mapping.get("password") and "pass" in form_details.get("fields", {}):
@@ -386,7 +399,11 @@ class CampusRegistrar:
             )
 
     def _submit_legacy_cgi(self, student_id: str, password: str) -> RegistrationResult:
-        """Direct CGI submit fallback when the modern form flow fails."""
+        """Direct CGI submit fallback when the modern form flow fails.
+        
+        Some older registration portals use a direct CGI script instead of a fancy form.
+        If the HTML parsing fails, we try POSTing directly to known CGI endpoints.
+        """
         try:
             candidates = []
             try:
@@ -394,6 +411,8 @@ class CampusRegistrar:
             except Exception:
                 pass
 
+            # Known UNESWA registration endpoints (Kwaluseni and main campus)
+            # We try HTTPS first for security, then fall back to HTTP if needed
             candidates.extend(
                 [
                     "http://kwnetreg.uniswa.sz/cgi-bin/register.cgi",

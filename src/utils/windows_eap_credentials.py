@@ -45,6 +45,8 @@ class WindowsEAPCredentialManager:
 
     def __init__(self):
         # Init these early in case __del__ gets called during failed setup
+        # Python can call __del__ at weird times; we need these attributes to exist
+        # even if initialization fails partway through.
         self.client_handle = None
         self.negotiated_version = wintypes.DWORD()
         self._guid_storage = None
@@ -53,11 +55,15 @@ class WindowsEAPCredentialManager:
             raise RuntimeError("WindowsEAPCredentialManager only works on Windows")
         
         try:
+            # wlanapi.dll is the Windows WiFi management library
+            # It's built into Windows, so this should always work unless WiFi is disabled
             self.wlanapi = ctypes.windll.LoadLibrary("wlanapi.dll")
         except Exception as e:
             raise RuntimeError(f"Failed to load wlanapi.dll: {e}")
 
         # Setup function prototypes
+        # We need to tell ctypes what arguments each Windows API function expects.
+        # If we get this wrong, we'll crash or get garbage data.
         DWORD = wintypes.DWORD
         HANDLE = wintypes.HANDLE
         PVOID = ctypes.c_void_p
@@ -96,6 +102,8 @@ class WindowsEAPCredentialManager:
         self.wlanapi.WlanSetProfileEapUserData.restype = DWORD
 
         # Some Windows builds may not export WlanGetProfileEapUserData
+        # Older Windows versions or minimal installs might not have this function.
+        # We check if it exists and set a flag so we can skip it gracefully.
         self._has_get_eap = True
         try:
             getattr(self.wlanapi, "WlanGetProfileEapUserData")
@@ -115,12 +123,14 @@ class WindowsEAPCredentialManager:
     def _open_handle(self) -> bool:
         """Open a connection to the Windows WLAN service"""
         if self.client_handle:
-            return True
+            return True  # Already open, nothing to do
         
         try:
             client_handle = wintypes.HANDLE()
             negotiated_version = wintypes.DWORD()
             
+            # Ask Windows for access to the WLAN service
+            # Version 2 = Windows Vista and later (covers Win7/8/10/11)
             result = self.wlanapi.WlanOpenHandle(
                 wintypes.DWORD(2),  # Client version (Windows Vista and later)
                 None,  # Reserved
@@ -168,6 +178,9 @@ class WindowsEAPCredentialManager:
                     list_ptr.value, ctypes.POINTER(WLAN_INTERFACE_INFO_LIST)
                 ).contents
                 if interface_list.dwNumberOfItems > 0:
+                    # The list memory is owned by wlanapi; once we call WlanFreeMemory()
+                    # below, pointers into it become invalid. Keep our own copy of the GUID
+                    # and return a pointer to that persistent storage.
                     # Copy GUID to persistent storage
                     self._guid_storage = GUID()
                     self._guid_storage.Data1 = interface_list.InterfaceInfo[0].InterfaceGuid.Data1
@@ -192,6 +205,8 @@ class WindowsEAPCredentialManager:
             return False, "No wireless interface found"
         
         # Build EAP credentials XML
+        # Windows stores WiFi credentials in a specific XML format. We're creating
+        # PEAP (type 25) with MSCHAPv2 (type 26) credentials - the most common setup.
         eap_xml = f"""<?xml version="1.0"?>
 <EapHostUserCredentials xmlns="http://www.microsoft.com/provisioning/EapHostUserCredentials" 
                         xmlns:eapCommon="http://www.microsoft.com/provisioning/EapCommon" 
@@ -244,8 +259,11 @@ class WindowsEAPCredentialManager:
             elif result == 1200:  # ERROR_BAD_PROFILE
                 return False, "Invalid profile or EAP configuration"
             elif result == 1206:  # ERROR_INVALID_PROFILE
+                # This usually means Single Sign-On (SSO) is enabled on the profile,
+                # which prevents manual credential storage
                 return False, "Profile does not support credential storage (SSO may be enabled)"
             else:
+                # Unknown error code - return it so we can debug
                 return False, f"Failed to store credentials (error code: {result})"
         
         except Exception as e:

@@ -40,6 +40,9 @@ def check_system_requirements() -> tuple[bool, list[str]]:
 
     Returns:
         tuple: (requirements_met, issues_list)
+    
+    We check Python version, OS support, and whether we have the right tools
+    (netsh on Windows, nmcli on Linux) before trying to configure anything.
     """
     issues: list[str] = []
 
@@ -51,6 +54,8 @@ def check_system_requirements() -> tuple[bool, list[str]]:
     if not system_info.is_supported_distro():
         issues.append(f"Unsupported OS: {system_info.get_system_summary()}")
 
+    # Check if we have permission to modify network settings
+    # On Windows this usually means Administrator, on Linux it varies
     if not can_configure_network():
         issues.append("Insufficient privileges for network configuration")
 
@@ -80,11 +85,14 @@ def check_dependencies() -> tuple[bool, list[str]]:
 
     Returns:
         tuple: (dependencies_met, missing_list)
+    
+    We try to import each required module. If any are missing, we tell the user
+    to run 'pip install -r requirements.txt' to install them.
     """
     required_modules = [
-        "customtkinter",
-        "requests",
-        "psutil",
+        "customtkinter",  # Modern UI framework
+        "requests",       # HTTP requests for registration portal
+        "psutil",         # System/process utilities
     ]
 
     # Platform-specific requirements
@@ -246,10 +254,12 @@ def main():
         print("Debug mode enabled")
 
     # On Windows, require administrator privileges for network configuration
+    # Modifying WiFi profiles and registry settings needs admin rights
     if get_os_type() == "Windows" and not is_admin():
         print(f"{APP_NAME} requires administrator privileges to configure network settings.")
         print("Requesting elevation...")
         
+        # Show the UAC (User Account Control) prompt to get admin rights
         if not request_admin_elevation():
             print("\nAdministrator privileges are required to run this application.")
             print("Please right-click the application and select 'Run as administrator'.")
@@ -257,7 +267,7 @@ def main():
             return 1
         
         # If we get here, elevation was requested and a new process started
-        # This process should exit
+        # This process should exit (the elevated one will take over)
         return 0
 
     print(f"Starting {APP_NAME} v{VERSION}...")
@@ -277,6 +287,7 @@ def main():
         for issue in req_issues:
             print(f"   • {issue}")
 
+        # Give the user a chance to continue anyway (might work on unsupported systems)
         try:
             response = input("\nContinue anyway? (y/N): ").lower().strip()
             if response not in ["y", "yes"]:

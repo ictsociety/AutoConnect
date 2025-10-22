@@ -43,9 +43,10 @@ class SystemInfo:
     def get_linux_distro(self) -> Optional[Dict[str, str]]:
         """Get Linux distribution information"""
         if not self.is_linux() or self._distro_info:
-            return self._distro_info
+            return self._distro_info  # Already cached or not Linux
 
         try:
+            # /etc/os-release is the modern standard way to identify Linux distros
             if os.path.exists("/etc/os-release"):
                 distro_info = {}
                 with open("/etc/os-release", "r") as f:
@@ -62,6 +63,8 @@ class SystemInfo:
                 }
                 return self._distro_info
 
+            # Fallback for older distros that don't have /etc/os-release
+            # Check for distro-specific files to identify the system
             distro_files = [
                 ("/etc/debian_version", "debian"),
                 ("/etc/redhat-release", "rhel"),
@@ -117,14 +120,21 @@ class SystemInfo:
         return self.get_distro_id() in supported_distros
 
     def get_windows_build_number(self) -> Optional[int]:
-        """Get Windows build number"""
+        """Get Windows build number
+        
+        Build numbers help us identify Windows versions:
+        - 22000+ = Windows 11
+        - 19041-19045 = Windows 10 20H1/20H2/21H1/21H2
+        - etc.
+        """
         if not self.is_windows():
             return None
         
         if self._windows_build is not None:
-            return self._windows_build
+            return self._windows_build  # Already cached
         
         try:
+            # Windows version string is like "10.0.22000" - we want the third part
             version_str = platform.version()
             parts = version_str.split('.')
             if len(parts) >= 3:
@@ -136,7 +146,10 @@ class SystemInfo:
         return None
     
     def is_windows_11_or_newer(self) -> bool:
-        """Check if running Windows 11 or newer (build 22000+)"""
+        """Check if running Windows 11 or newer (build 22000+)
+        
+        Windows 11 changed WiFi connection behavior, so we need to detect it.
+        """
         if not self.is_windows():
             return False
         
@@ -144,6 +157,7 @@ class SystemInfo:
         if build is None:
             return False
         
+        # Windows 11 started at build 22000
         return build >= 22000
     
     def should_use_native_wifi_connection(self) -> bool:
@@ -176,8 +190,10 @@ class PrivilegeManager:
         """Check if running with administrator/root privileges"""
         try:
             if platform.system() == "Windows":
+                # Windows: Check if we're in the Administrators group
                 return ctypes.windll.shell32.IsUserAnAdmin() != 0
             else:
+                # Linux/macOS: Check if effective user ID is 0 (root)
                 return os.geteuid() == 0
         except Exception:
             return False
@@ -229,6 +245,16 @@ class ProcessManager:
         """
         Run a command and return success, stdout, stderr
         Returns: (success, stdout, stderr)
+        
+        This is a wrapper around subprocess.run that handles errors gracefully
+        and returns a consistent format we can use throughout the app.
+        
+        subprocess.run() executes a command (like "netsh" or "nmcli") and captures
+        its output. We use it to run system commands from Python code.
+        - capture_output=True: Save what the command prints (stdout/stderr)
+        - text=True: Return output as strings, not bytes
+        - timeout: Kill the command if it takes too long
+        - check=False: Don't crash if command fails, just return the error
         """
         try:
             result = subprocess.run(
@@ -237,7 +263,7 @@ class ProcessManager:
                 text=True,
                 timeout=timeout,
                 shell=shell,
-                check=False,
+                check=False,  # Don't raise exception on non-zero exit
             )
 
             success = result.returncode == 0

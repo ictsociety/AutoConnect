@@ -126,6 +126,9 @@ class CredentialsFrame(ctk.CTkFrame):
 
     def __init__(self, parent, translator: Optional[Callable[[str], str]] = None):
         super().__init__(parent)
+        # Lambda is a quick way to create a tiny function without using 'def'.
+        # Here: if no translator is provided, use a lambda that just returns the key unchanged.
+        # This is like saying: translator = lambda k: k  (a function that returns its input)
         self._t = translator or (lambda k: k)
 
         self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -145,6 +148,7 @@ class CredentialsFrame(ctk.CTkFrame):
         
         self.student_id_frame = ctk.CTkFrame(self.content_frame, fg_color="transparent")
         self.student_id_frame.pack(fill="x", pady=(5, 10))
+        # Mask Student ID by default (shared labs/screens). Users can toggle visibility.
         self.student_id_entry = ctk.CTkEntry(
             self.student_id_frame, placeholder_text="e.g., 2021/1234 or 20211234", show="*"
         )
@@ -159,6 +163,9 @@ class CredentialsFrame(ctk.CTkFrame):
         )
         self.student_id_toggle.pack(side="right", padx=(10, 0))
 
+        # Lambda creates a small inline function. When user presses Enter in Student ID field,
+        # this lambda receives the event (e) and moves focus to the birthday field.
+        # Without lambda, we'd need to define a separate function just for this one line.
         self.student_id_entry.bind("<Return>", lambda e: self.birthday_entry.focus())
 
         # Birthday
@@ -222,6 +229,8 @@ class CredentialsFrame(ctk.CTkFrame):
         valid, message = self.validate_credentials()
         if valid:
             # Focus will be handled by the complete setup action
+            # Reach up to the main window to trigger the action; avoids passing callbacks
+            # through multiple frames. Ugly but works for this small UI.
             self.master.master._do_complete_setup()  # Navigate up to main window
         else:
             # Show validation error briefly
@@ -234,7 +243,11 @@ class CredentialsFrame(ctk.CTkFrame):
         return (self.student_id_entry.get().strip(), self.birthday_entry.get().strip())
 
     def validate_credentials(self) -> tuple[bool, str]:
-        """Validate credential format"""
+        """Validate credential format
+        
+        We do basic checks here (not empty), then delegate to the network layer
+        for detailed validation. This keeps the validation logic in one place.
+        """
         student_id, birthday = self.get_credentials()
 
         if not student_id:
@@ -274,6 +287,7 @@ class ActionButtonsFrame(ctk.CTkFrame):
     def __init__(self, parent, callbacks: dict, translator: Optional[Callable[[str], str]] = None):
         super().__init__(parent)
         self.callbacks = callbacks
+        # Lambda fallback: if no translator provided, return the key as-is
         self._t = translator or (lambda k: k)
 
         # Main setup button
@@ -479,6 +493,10 @@ class UNESWAWiFiApp:
 
     def _setup_keyboard_shortcuts(self):
         """Set up keyboard shortcuts for common actions"""
+        # Lambda functions here convert keyboard events into method calls.
+        # tkinter's bind() expects a function that takes an event parameter (e),
+        # but we don't need the event - we just want to call our methods.
+        # Lambda lets us write this in one line instead of defining separate functions.
         self.root.bind("<Control-Return>", lambda e: self._do_complete_setup())
         self.root.bind("<F5>", lambda e: self._do_complete_setup())
         self.root.bind("<Control-t>", lambda e: self._do_test_connection())
@@ -611,18 +629,29 @@ ICT Society - University of Eswatini"""
         self.log_frame.add_log(message)
 
     def _run_operation(self, operation: Callable, operation_name: str):
-        """Run operation in background thread with UI updates"""
+        """Run operation in background thread with UI updates
+        
+        Network operations can take several seconds. If we run them on the main thread,
+        the UI freezes and looks broken. So we run them in a background thread and
+        update the UI when done.
+        
+        Threading basics: Python can run multiple things at once using threads.
+        - Main thread: Handles UI (button clicks, window updates)
+        - Worker thread: Does slow network stuff (WiFi connection, proxy setup)
+        This keeps the UI responsive while work happens in the background.
+        """
         if self.is_running_operation:
             self._log(f"{operation_name} already in progress")
             return
 
+        # Define a worker function that will run in the background thread
         def worker():
             self.is_running_operation = True
-            self.buttons_frame.set_buttons_enabled(False)
+            self.buttons_frame.set_buttons_enabled(False)  # Prevent double-clicks
 
             try:
                 self._log(f"Starting {operation_name}...")
-                operation()
+                operation()  # This is the actual work (connect WiFi, etc.)
             except Exception as e:
                 self._log(f"{operation_name} failed: {e}")
             finally:
@@ -630,13 +659,20 @@ ICT Society - University of Eswatini"""
                 self.buttons_frame.set_buttons_enabled(True)
                 self._update_connection_status()
 
+        # Create and start the background thread
+        # daemon=True means the thread dies when the main program exits
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
 
     def _do_complete_setup(self):
-        """Complete network setup"""
+        """Complete network setup
+        
+        This is the main "do everything" button - connects WiFi, sets up proxy,
+        and registers the device. Most users will just use this.
+        """
 
         def setup():
+            # Validate first - no point trying to connect with bad credentials
             valid, message = self.credentials_frame.validate_credentials()
             if not valid:
                 self._log(f"{message}")
@@ -644,11 +680,13 @@ ICT Society - University of Eswatini"""
 
             student_id, birthday = self.credentials_frame.get_credentials()
 
+            # Save credentials so users don't have to retype them every time
+            # This is just convenience - we store them in plaintext in the user's home dir
             try:
                 if save_credentials(student_id, birthday):
                     self._log("Credentials saved for next time")
             except Exception:
-                pass
+                pass  # Not critical if this fails
 
             self._log("Starting complete network setup...")
             results = network_manager.complete_setup(student_id, birthday)
@@ -786,16 +824,20 @@ ICT Society - University of Eswatini"""
             self._log(f"Status update error: {e}")
 
     def _start_monitoring(self):
-        """Start background connection monitoring"""
+        """Start background connection monitoring
+        
+        We check WiFi/proxy status every 30 seconds and update the status bar.
+        This runs in a background thread so it doesn't freeze the UI.
+        """
 
         def monitor():
             self.monitor_running = True
             while self.monitor_running:
                 try:
                     self._update_connection_status()
-                    time.sleep(MONITOR_INTERVAL)
+                    time.sleep(MONITOR_INTERVAL)  # Wait 30 seconds between checks
                 except Exception:
-                    time.sleep(MONITOR_INTERVAL)
+                    time.sleep(MONITOR_INTERVAL)  # Keep going even if check fails
 
         self.monitor_thread = threading.Thread(target=monitor, daemon=True)
         self.monitor_thread.start()

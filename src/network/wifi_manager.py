@@ -47,6 +47,8 @@ if get_os_type() == "Windows":
         clear_windows_eap_credentials = None
         check_windows_eap_credentials = None
 else:
+    # Non-Windows: keep these callables defined so callers can feature-detect
+    # (None means unavailable) without import errors on Linux/macOS.
     store_windows_eap_credentials = None
     clear_windows_eap_credentials = None
     check_windows_eap_credentials = None
@@ -94,6 +96,9 @@ class WiFiCredentials:
         - "DDMMYY" (6 digits) - expands year to 20YY and adds prefix
 
         Returns complete password like "Uneswa01011999"
+        
+        Why this matters: The university WiFi expects passwords in this exact format.
+        We're flexible on input so users don't have to remember the exact pattern.
         """
         # If birthday was passed in, normalize and use it
         if birthday_ddmmyy:
@@ -196,13 +201,20 @@ class WindowsWiFiManager:
         eap_method = (WIFI_EAP_METHOD or "PEAP").strip().upper()
         phase2 = (WIFI_PHASE2_AUTH or "MSCHAPv2").strip().upper()
 
-        # Windows natively supports PEAP and MSCHAPv2. Other EAP methods require
-        # third-party supplicants, so we're sticking with what works out of the box.
-        eap_type_outer = 25  # PEAP
-        eap_type_inner = 26  # MSCHAPv2
+        # WPA2-Enterprise uses EAP (Extensible Authentication Protocol) for secure auth.
+        # PEAP = Protected EAP (outer tunnel), MSCHAPv2 = Microsoft Challenge-Handshake (inner auth).
+        # Think of it like: PEAP creates an encrypted tunnel, then MSCHAPv2 sends username/password
+        # through that tunnel. Windows supports these natively - no extra software needed.
+        eap_type_outer = 25  # PEAP (type 25 in Windows)
+        eap_type_inner = 26  # MSCHAPv2 (type 26 in Windows)
 
-        # Build the profile XML. Server cert validation is disabled because that's how
-        # the university network is configured (no cert validation required).
+        # Build the profile XML. This is a Windows-specific XML format that defines
+        # how to connect to the WiFi network. It includes security settings, encryption
+        # type (AES), and authentication method (WPA2-Enterprise with PEAP/MSCHAPv2).
+        # 
+        # Server cert validation is disabled because UNESWA's network doesn't require it.
+        # In a corporate environment you'd normally validate the RADIUS server certificate,
+        # but most campus WiFi networks skip this for simplicity.
         profile_xml = f"""<?xml version="1.0"?>
 <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
     <name>{WIFI_SSID}</name>
@@ -336,6 +348,9 @@ class WindowsWiFiManager:
 
             if success:
                 try:
+                    # Windows shows its own EAP credentials dialog; we can't feed
+                    # creds programmatically. Show a quick helper popup with the
+                    # derived username/password, in a thread so we don't block.
                     import threading
                     def show_credential_prompt():
                         import tkinter.messagebox as msgbox
@@ -350,6 +365,7 @@ class WindowsWiFiManager:
                 except Exception:
                     pass
 
+                # Give native supplicant time to finish EAP handshake (~30s total)
                 for attempt in range(15):
                     time.sleep(2)
                     if WindowsWiFiManager.is_connected_to_network():
@@ -368,7 +384,15 @@ class WindowsWiFiManager:
     ) -> Tuple[bool, str]:
         """Connect to WiFi using credentials"""
         try:
-            # Windows 11: Try native connection first, then fall back to traditional method
+            # Windows version differences for WiFi connection:
+            # - Windows 11 (newer builds): Can use simple "netsh wlan connect" and Windows
+            #   shows a native credential prompt. User enters username/password manually.
+            # - Windows 10/8 and older Win11: Must create a full WPA2-Enterprise XML profile
+            #   with PEAP/MSCHAPv2 settings, then try to auto-store credentials in Windows
+            #   credential manager. This is more complex but allows auto-login.
+            # 
+            # We try the simple method first on Win11, then fall back to the complex method
+            # if that doesn't work or if we're on an older Windows version.
             if system_info.should_use_native_wifi_connection():
                 native_success, native_msg = WindowsWiFiManager.connect_to_wifi_native(credentials, password)
                 
@@ -376,6 +400,8 @@ class WindowsWiFiManager:
                     return True, native_msg
                 
                 # Native method didn't work, wait a bit then try the traditional approach
+                # Give the user time to enter credentials in the Windows dialog before we
+                # assume failure and try the legacy method.
                 wait_time = WINDOWS_SETTINGS.get("win11_native_wait_seconds", 15)
                 time.sleep(wait_time)
                 
@@ -385,6 +411,8 @@ class WindowsWiFiManager:
                 
                 # Fall through to traditional method below
             # Delete any old profiles first to start fresh
+            # Old profiles might have stale credentials or wrong settings. Starting clean
+            # avoids weird "it worked yesterday but not today" issues.
             try:
                 delete_cmd = ["netsh", "wlan", "delete", "profile", f"name={WIFI_SSID}"]
                 if is_admin():
@@ -403,6 +431,8 @@ class WindowsWiFiManager:
 
             # Set these profile parameters before storing credentials.
             # If you change them afterwards, Windows sometimes wipes the stored credentials.
+            # This is a Windows quirk - it treats profile changes as "new" profiles and
+            # clears the credential cache. So we configure everything first, then store creds.
             try:
                 # Set to user auth mode
                 run_cmd([
@@ -427,6 +457,8 @@ class WindowsWiFiManager:
             # Try to store the credentials in Windows credential manager.
             # On Windows 11 22H2+ with Credential Guard enabled, this usually fails
             # silently due to security restrictions. Not much we can do about that.
+            # Credential Guard is a Windows security feature that isolates secrets in
+            # a virtualized container - great for security, annoying for auto-login.
             cred_stored = False
             credential_guard_active = WindowsWiFiManager.is_credential_guard_enabled()
             
@@ -438,6 +470,7 @@ class WindowsWiFiManager:
                     cred_stored = bool(cred_success)
                     
                     # Double-check the credentials actually stuck
+                    # Sometimes Windows says "OK" but doesn't actually persist them.
                     if cred_stored and check_windows_eap_credentials:
                         time.sleep(0.5)  # Windows needs a moment to write to credential store
                         present, msg = check_windows_eap_credentials(WIFI_SSID)
@@ -549,6 +582,8 @@ class WindowsWiFiManager:
         try:
             # Clear stored EAP credentials first
             if clear_windows_eap_credentials:
+                # Windows can retain per-user EAP secrets even after profile deletion;
+                # clear them explicitly to avoid surprise auto-auth later.
                 clear_windows_eap_credentials(WIFI_SSID)
             
             # Only remove the specific UNESWA WiFi profile
@@ -674,6 +709,9 @@ class LinuxWiFiManager:
             # - Save credentials in the keyring so you don't have to re-enter them
             # - Don't validate server certificates (university network doesn't require it)
             # - Auto-connect when the network is in range
+            # 
+            # nmcli is NetworkManager's command-line tool - it's the standard way to
+            # configure WiFi on modern Linux distros (Ubuntu, Fedora, etc.)
             key_mgmt = "wpa-eap" if "wpa" in (WIFI_SECURITY or "").lower() else "wpa-eap"
             eap_method = (WIFI_EAP_METHOD or "peap").lower()
             phase2_auth = (WIFI_PHASE2_AUTH or "mschapv2").lower()
@@ -701,9 +739,11 @@ class LinuxWiFiManager:
                 "802-1x.password",
                 password,
                 # Skip server cert validation (not needed for this network)
+                # Setting this to false means we trust any RADIUS server claiming to be UNESWA
                 "802-1x.system-ca-certs",
                 "false",
                 # Save password in keyring (0 = store it, don't prompt every time)
+                # This is like "Remember me" - stores creds in GNOME Keyring or KWallet
                 "802-1x.password-flags",
                 "0",
                 "connection.autoconnect",
@@ -714,6 +754,7 @@ class LinuxWiFiManager:
 
             if success:
                 # Connection created, now try to activate it
+                # Creating the connection just saves the config; we still need to "up" it
                 activate_cmd = ["nmcli", "connection", "up", WIFI_SSID]
                 activate_success, activate_stdout, activate_stderr = run_cmd(
                     activate_cmd, timeout=WIFI_CONNECT_TIMEOUT

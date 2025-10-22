@@ -256,6 +256,9 @@ class ProxyTester:
         try:
             if get_os_type() == "Windows":
                 import winreg
+                # Check WinINet (IE/Edge) user-level proxy settings under HKCU.
+                # This does not cover WinHTTP (system services) proxy. PAC mode is
+                # detected via AutoConfigURL; manual proxy uses ProxyEnable/ProxyServer.
 
                 try:
                     key = winreg.OpenKey(
