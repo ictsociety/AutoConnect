@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#updating this in due course. AI generated it as placeholder because registration site doesn't work outside of school sometimes.
 """
 UNESWA WiFi AutoConnect - Device Registration Manager
 ICT Society Initiative - University of Eswatini
